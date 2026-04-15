@@ -150,10 +150,8 @@
 /* ═══════════════════════════════════════════════════════════════
    CONFIGURATION
 ═══════════════════════════════════════════════════════════════ */
-const API_KEY  = "whBzTW+3SVuVXak/pcUO9g==";
-const BASE_URL = "https://datamall2.mytransport.sg/ltaodataservice";
-const CACHE_KEY   = "sgbusmap_v3_data";
-const CACHE_TS    = "sgbusmap_v3_ts";
+const CACHE_KEY   = "sgbusmap_v4_data";
+const CACHE_TS    = "sgbusmap_v4_ts";
 const CACHE_TTL   = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const OPERATORS = {
@@ -300,32 +298,7 @@ function showError(msg) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   LTA DATAMALL FETCHER
-═══════════════════════════════════════════════════════════════ */
-async function ltaFetchAll(endpoint, onProgress) {
-  const records = [];
-  let skip = 0;
-  while (true) {
-    const resp = await fetch(`${BASE_URL}/${endpoint}?$skip=${skip}`, {
-      headers: { AccountKey: API_KEY, accept: "application/json" }
-    });
-    if (!resp.ok) {
-      const txt = await resp.text().catch(() => resp.statusText);
-      throw new Error(`${resp.status} ${txt} (${endpoint} @skip=${skip})`);
-    }
-    const json = await resp.json();
-    const items = json.value ?? [];
-    records.push(...items);
-    if (onProgress) onProgress(records.length);
-    if (items.length < 500) break;
-    skip += 500;
-    await new Promise(r => setTimeout(r, 80)); // gentle rate-limit
-  }
-  return records;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   DATA LOADING & PROCESSING
+   DATA LOADING — static pre-generated JSON files
 ═══════════════════════════════════════════════════════════════ */
 async function loadData() {
   // Check cache
@@ -338,64 +311,38 @@ async function loadData() {
     }
   }
 
-  // Fetch fresh
-  setProgress(5, "Fetching bus services…");
-  const rawServices = await ltaFetchAll("BusServices");
-  setProgress(20, `Fetched ${rawServices.length} services. Loading stops…`);
+  // Load pre-generated static files
+  setProgress(10, "Loading bus stops…");
+  const fetchJSON = url => fetch(url).then(r => {
+    if (!r.ok) throw new Error(`Failed to load ${url}: ${r.statusText}`);
+    return r.json();
+  });
 
-  const rawStops = await ltaFetchAll("BusStops", n =>
-    setProgress(20 + Math.min(15, (n / 5500) * 15), `Fetching stops… (${n})`)
-  );
-  setProgress(35, `Fetched ${rawStops.length} stops. Loading routes (please wait)…`);
+  const [rawStops, rawServices, rawRoutes] = await Promise.all([
+    fetchJSON("./data/bus_stops.json"),
+    fetchJSON("./data/bus_services.json"),
+    fetchJSON("./data/bus_routes.json"),
+  ]);
+  setProgress(80, "Processing data…");
 
-  const rawRoutes = await ltaFetchAll("BusRoutes", n =>
-    setProgress(35 + Math.min(50, (n / 60000) * 50), `Fetching routes… (${n})`)
-  );
-  setProgress(90, "Processing data…");
+  // stops: {StopCode: {lat, lon, desc, road}} — already correct shape
+  const stops = rawStops;
 
-  // Process stops
-  const stops = {};
-  for (const s of rawStops) {
-    const code = (s.BusStopCode || "").trim();
-    if (code) stops[code] = { lat: s.Latitude, lon: s.Longitude, desc: s.Description || "", road: s.RoadName || "" };
-  }
-
-  // Process services
+  // services: adapt fetch_data.py keys → internal keys
   const services = {};
-  for (const s of rawServices) {
-    const no = (s.ServiceNo || "").trim();
-    const dir = s.Direction || 1;
-    if (!no) continue;
-    if (!services[no] || dir === 1) {
-      const op = (s.Operator || "").trim();
-      services[no] = {
-        op,
-        opName: (OPERATORS[op] || { name: op }).name,
-        cat:  s.Category || "",
-        orig1: s.OriginCode || "",
-        dest1: s.DestinationCode || "",
-        pkg: SVC_PKG[no] || "Other",
-      };
-    }
+  for (const [no, s] of Object.entries(rawServices)) {
+    services[no] = {
+      op:     s.operator,
+      opName: s.operatorName,
+      cat:    s.category,
+      orig1:  "",
+      dest1:  "",
+      pkg:    s.package,
+    };
   }
 
-  // Process routes — group by service + direction, sort by sequence
-  const routes = {};
-  for (const r of rawRoutes) {
-    const svc = (r.ServiceNo || "").trim();
-    const dir = String(r.Direction || 1);
-    const code = (r.BusStopCode || "").trim();
-    const seq  = r.StopSequence ?? 0;
-    if (!svc || !code) continue;
-    if (!routes[svc]) routes[svc] = {};
-    if (!routes[svc][dir]) routes[svc][dir] = [];
-    routes[svc][dir].push([seq, code]);
-  }
-  for (const svc of Object.keys(routes)) {
-    for (const dir of Object.keys(routes[svc])) {
-      routes[svc][dir] = routes[svc][dir].sort((a, b) => a[0] - b[0]).map(x => x[1]);
-    }
-  }
+  // routes: {ServiceNo: {dir: [stopCodes...]}} — already correct shape
+  const routes = rawRoutes;
 
   const data = { stops, services, routes };
   try {
@@ -526,12 +473,10 @@ async function main() {
     data = await loadData();
   } catch (err) {
     console.error(err);
-    const isCors = err.message.includes("Failed to fetch") || err.message.includes("NetworkError");
     showError(
-      isCors
-        ? `<b>CORS / Network error.</b><br>The LTA DataMall API may not allow direct browser access from this origin.<br>
-           <small>Try opening the page via <code>http://localhost</code> or ensure your API key is valid.<br>Error: ${err.message}</small>`
-        : `<b>Error loading data:</b> ${err.message}<br><small>Check the browser console for details.</small>`
+      `<b>Error loading data:</b> ${err.message}<br>
+       <small>The data files (bus_stops.json, bus_services.json, bus_routes.json) may be missing.<br>
+       Run <code>python3 fetch_data.py --key YOUR_KEY</code> locally and commit the generated files.</small>`
     );
     return;
   }
