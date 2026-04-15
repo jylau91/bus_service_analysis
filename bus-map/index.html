@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Singapore Bus Service Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --sbst:  #1A56A0;
+      --smrt:  #C8102E;
+      --gas:   #E87722;
+      --tts:   #2E8B57;
+      --bg:    #1a1d23;
+      --panel: #22252e;
+      --card:  #2b2f3a;
+      --border:#3a3f4e;
+      --text:  #e8eaf0;
+      --muted: #8891a8;
+      --accent:#4a90d9;
+    }
+
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+
+    /* ── HEADER ─────────────────────────────────────────── */
+    #header {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+      padding: 12px 16px; background: var(--panel);
+      border-bottom: 1px solid var(--border); z-index: 1000; position: relative;
+    }
+    #header h1 { font-size: 1rem; font-weight: 700; white-space: nowrap; letter-spacing: 0.3px; }
+    #header h1 span { color: var(--accent); }
+
+    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex: 1; }
+
+    .btn {
+      padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--card); color: var(--text); font-size: 0.82rem;
+      cursor: pointer; white-space: nowrap; transition: background 0.15s, border-color 0.15s;
+    }
+    .btn:hover { background: #363b4a; border-color: var(--accent); }
+    .btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    select, input[type="text"] {
+      padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--card); color: var(--text); font-size: 0.82rem;
+      outline: none; cursor: pointer;
+    }
+    select:focus, input:focus { border-color: var(--accent); }
+
+    #search { min-width: 130px; }
+
+    /* ── MAP ──────────────────────────────────────────────── */
+    #map-container { transition: height 0.3s ease; overflow: hidden; }
+    #map-container.collapsed { height: 0 !important; }
+    #map { width: 100%; height: 100%; }
+
+    /* ── LEGEND ───────────────────────────────────────────── */
+    #legend {
+      display: flex; flex-wrap: wrap; gap: 8px 16px;
+      padding: 8px 16px; background: var(--panel);
+      border-top: 1px solid var(--border); font-size: 0.78rem;
+    }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-swatch { width: 22px; height: 4px; border-radius: 2px; }
+    .legend-label { color: var(--muted); }
+    #stats { margin-left: auto; color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+
+    /* ── LOADING OVERLAY ──────────────────────────────────── */
+    #overlay {
+      position: fixed; inset: 0; background: rgba(20,22,30,0.97);
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; z-index: 9999; gap: 20px;
+    }
+    #overlay h2 { font-size: 1.25rem; color: var(--text); }
+    #progress-bar-wrap {
+      width: 340px; height: 8px; background: var(--border);
+      border-radius: 4px; overflow: hidden;
+    }
+    #progress-bar { height: 100%; width: 0; background: var(--accent); transition: width 0.4s; border-radius: 4px; }
+    #progress-msg { color: var(--muted); font-size: 0.85rem; max-width: 340px; text-align: center; }
+    #error-msg { color: #e87; font-size: 0.82rem; max-width: 380px; text-align: center; display: none; }
+
+    /* ── LEAFLET OVERRIDES ────────────────────────────────── */
+    .leaflet-container { background: #242830; }
+    .leaflet-popup-content-wrapper {
+      background: var(--card); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    .leaflet-popup-tip { background: var(--card); }
+    .popup-title { font-weight: 700; font-size: 1rem; margin-bottom: 6px; }
+    .popup-row { font-size: 0.82rem; color: var(--muted); margin: 3px 0; }
+    .popup-row b { color: var(--text); }
+    .op-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 12px;
+      font-size: 0.76rem; font-weight: 600; color: #fff; margin-top: 4px;
+    }
+    .pkg-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 12px;
+      font-size: 0.76rem; background: var(--border); color: var(--text); margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- LOADING OVERLAY -->
+<div id="overlay">
+  <h2>🚌 Singapore Bus Map</h2>
+  <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+  <div id="progress-msg">Initialising…</div>
+  <div id="error-msg"></div>
+</div>
+
+<!-- HEADER -->
+<div id="header">
+  <h1>🚌 <span>SG Bus</span> Map</h1>
+  <div class="controls">
+    <button class="btn active" id="btn-toggle-map">▲ Hide Map</button>
+    <select id="filter-operator">
+      <option value="">All Operators</option>
+      <option value="SBST">SBS Transit</option>
+      <option value="SMRT">SMRT Buses</option>
+      <option value="GAS">Go-Ahead Singapore</option>
+      <option value="TTS">Tower Transit</option>
+    </select>
+    <select id="filter-package"><option value="">All Packages</option></select>
+    <input type="text" id="search" placeholder="Service no…" maxlength="6">
+    <button class="btn" id="btn-clear-cache" title="Force re-download all data">↺ Refresh Data</button>
+  </div>
+</div>
+
+<!-- MAP -->
+<div id="map-container" style="height: calc(100vh - 96px)">
+  <div id="map"></div>
+</div>
+
+<!-- LEGEND -->
+<div id="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--sbst)"></div><span class="legend-label">SBS Transit</span></div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--smrt)"></div><span class="legend-label">SMRT Buses</span></div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--gas)"></div><span class="legend-label">Go-Ahead Singapore</span></div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--tts)"></div><span class="legend-label">Tower Transit</span></div>
+  <div id="stats"></div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   CONFIGURATION
+═══════════════════════════════════════════════════════════════ */
+const CACHE_KEY   = "sgbusmap_v4_data";
+const CACHE_TS    = "sgbusmap_v4_ts";
+const CACHE_TTL   = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+const OPERATORS = {
+  "SBST": { name: "SBS Transit",        color: "#1A56A0" },
+  "SMRT": { name: "SMRT Buses",         color: "#C8102E" },
+  "GAS":  { name: "Go-Ahead Singapore", color: "#E87722" },
+  "TTS":  { name: "Tower Transit",      color: "#2E8B57" },
+};
+
+/* ── Bus Contracting Packages (LTA BCM, as of 2024) ────────────
+   Source: LTA press releases + Land Transport Guru
+   Operator is canonical from the BusServices API; packages are
+   geographical groupings used for LTA tender contracts.
+─────────────────────────────────────────────────────────────── */
+const PACKAGES = {
+  // ── Go-Ahead Singapore ──────────────────────────────────────
+  "Bulim": {
+    op: "GAS",
+    svcs: ["52","53","78","79","157","178","179","240","241","242","243",
+           "244","245","246","247","249","252","253","254","255","256","257",
+           "258","NR1","NR2","NR3","NR4","NR5","NR6","NR7","NR8"]
+  },
+  "Clementi": {
+    op: "GAS",
+    svcs: ["14","48","96","96B","105","106","154","186","200","201","282",
+           "283","284","285","286","287","288","289"]
+  },
+  "Punggol": {
+    op: "GAS",
+    svcs: ["3","43","43e","50","83","83A","84","85","86","87","88","89",
+           "89e","90","381","382","382G","382W","383","384","385","386"]
+  },
+  // ── SMRT Buses ──────────────────────────────────────────────
+  "Jurong West": {
+    op: "SMRT",
+    svcs: ["99","99A","143","143M","160","161","162","162M","163","165","166",
+           "167","168","169","170","172","173","174","175","176","177","180",
+           "181","182","182F","183","184","185","187","188","189","190","191",
+           "192","193","194","195","197","198","199","337","NR5"]
+  },
+  "Sembawang–Yishun": {
+    op: "SMRT",
+    svcs: ["117","119","860","961","962","963","964","965","966","967","968",
+           "969","970","972","975","980"]
+  },
+  "Woodlands": {
+    op: "SMRT",
+    svcs: ["170","171","851","851e","852","853","854","855","856","857","858",
+           "859","860","861","882","883","884","885","886","888","903","911",
+           "912","913","950","960","961","963","975"]
+  },
+  "Bishan–Toa Payoh": {
+    op: "SMRT",
+    svcs: ["8","13","23","57","73","93","93A","105","123","124","125","126",
+           "127","128","133","139","147","163","232","232A","232X","233","236",
+           "237","238","239","260","261","262","263","264","265","266","267",
+           "268","301","309","317","318","319"]
+  },
+  // ── SBS Transit ─────────────────────────────────────────────
+  "Loyang": {
+    op: "SBST",
+    svcs: ["2","2A","9","18","18B","28","34","35","42","55","65","65B","66",
+           "67","67A","67B","68","69","70","70A","70M","72","72B","73","76",
+           "77","81","82","100","102","109","116","118","118A","119","135",
+           "136","137","228","228A","229","354","359","361","368","369","505"]
+  },
+  "Seletar": {
+    op: "SBST",
+    svcs: ["11","11A","22","25","26","27","29","31","43","43e","55","82A",
+           "103","108","110","111","112","113","115","116","117","119","125",
+           "126","129","130","131","132","133","156","159","163","196","196A",
+           "197","302","325","326","327","358","359","360","361","362","362A",
+           "363","364","364A","365","366","368","371","382","382A","382W","383","385"]
+  },
+  "Buona Vista": {
+    op: "SBST",
+    svcs: ["14","16","17","30","30A","33","36","36A","36B","61","74","75",
+           "91","92","93","95","97","97A","97B","111","113","114","145","147",
+           "148","149","153","155","156","158","159","186","188","189","190",
+           "191","192","194","195","196","197","198","199","200","201","210",
+           "211","212","213","214","215","216","217","218","219","220","221",
+           "222","223","224","225","226","227","228","229","230","231","232",
+           "233","234","235","236","237","238","239","246","247","248","250",
+           "251","259","260","NR1","NR2"]
+  },
+  "Tampines": {
+    op: "SBST",
+    svcs: ["2","3","4","6","7","8","9","10","12","15","18","19","20","21",
+           "23","24","27","28","29","30","33","34","35","36","38","40","41",
+           "42","44","45","46","47","49","51","53","54","56","58","59","60",
+           "62","63","64","67","71","80","81","82","94","101","105","107",
+           "120","121","122","123","124","127","128","129","130","141","142",
+           "144","146","150","151","152","153","154","160","164","165","168",
+           "169","170","174","175","181","182","183","184","185","186","187",
+           "188","189","190","191","192","193","194","195","196","197","198",
+           "199","200","201","202","203","204","205","206","207","208","209",
+           "210","211","212","213","214","215","216","217","218","219","220",
+           "221","222","223","224","225","226","227","228","229","230","231",
+           "232","233","234","235","236","237","238","239","240","241","242",
+           "243","244","245","246","247","248","249","250","251","252","253",
+           "254","255","256","257","258","259","260","NR8"]
+  },
+  "Hougang–Punggol": {
+    op: "SBST",
+    svcs: ["3","53","62","63","64","65","65B","66","67","67A","67B","68","69",
+           "70","70A","70M","72","72B","76","77","80","81","82","83","84","85",
+           "86","87","88","89","90","102","103","107","108","115","116","117",
+           "118","118A","119","135","136","138","150","153","156","158","159",
+           "325","326","327","368","381","382","382A","382B","382G","382W",
+           "383","384","385","386","NR8"]
+  },
+  "Bukit Merah": {
+    op: "SBST",
+    svcs: ["1","10","12","14","16","30","30A","33","36","40","51","61","62",
+           "63","75","91","93","93A","97","97A","97B","111","143","145","147",
+           "148","149","153","155","156","158","159","195","196","197","198",
+           "199","200","215","229","247","NR1"]
+  },
+};
+
+/* Build service → package lookup */
+const SVC_PKG = {};
+for (const [pkg, info] of Object.entries(PACKAGES)) {
+  for (const svc of info.svcs) SVC_PKG[svc] = pkg;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UI HELPERS
+═══════════════════════════════════════════════════════════════ */
+const $overlay     = document.getElementById("overlay");
+const $progressBar = document.getElementById("progress-bar");
+const $progressMsg = document.getElementById("progress-msg");
+const $errorMsg    = document.getElementById("error-msg");
+const $stats       = document.getElementById("stats");
+
+function setProgress(pct, msg) {
+  $progressBar.style.width = pct + "%";
+  $progressMsg.textContent = msg;
+}
+
+function showError(msg) {
+  $errorMsg.style.display = "block";
+  $errorMsg.innerHTML = msg;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DATA LOADING — static pre-generated JSON files
+═══════════════════════════════════════════════════════════════ */
+async function loadData() {
+  // Check cache
+  const ts = localStorage.getItem(CACHE_TS);
+  if (ts && Date.now() - parseInt(ts) < CACHE_TTL) {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (cached) {
+      setProgress(100, "Loading from cache…");
+      return JSON.parse(cached);
+    }
+  }
+
+  // Load pre-generated static files
+  setProgress(10, "Loading bus stops…");
+  const fetchJSON = url => fetch(url).then(r => {
+    if (!r.ok) throw new Error(`Failed to load ${url}: ${r.statusText}`);
+    return r.json();
+  });
+
+  const [rawStops, rawServices, rawRoutes] = await Promise.all([
+    fetchJSON("./data/bus_stops.json"),
+    fetchJSON("./data/bus_services.json"),
+    fetchJSON("./data/bus_routes.json"),
+  ]);
+  setProgress(80, "Processing data…");
+
+  // stops: {StopCode: {lat, lon, desc, road}} — already correct shape
+  const stops = rawStops;
+
+  // services: adapt fetch_data.py keys → internal keys
+  const services = {};
+  for (const [no, s] of Object.entries(rawServices)) {
+    services[no] = {
+      op:     s.operator,
+      opName: s.operatorName,
+      cat:    s.category,
+      orig1:  "",
+      dest1:  "",
+      pkg:    s.package,
+    };
+  }
+
+  // routes: {ServiceNo: {dir: [stopCodes...]}} — already correct shape
+  const routes = rawRoutes;
+
+  const data = { stops, services, routes };
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+    localStorage.setItem(CACHE_TS, Date.now().toString());
+  } catch (e) { /* storage full — continue without cache */ }
+
+  return data;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAP
+═══════════════════════════════════════════════════════════════ */
+let map, allLayers = [], data = null;
+let currentOpFilter  = "";
+let currentPkgFilter = "";
+let currentSearch    = "";
+
+function initMap() {
+  map = L.map("map", {
+    center: [1.3521, 103.8198],
+    zoom: 12,
+    preferCanvas: true,  // canvas renderer — much faster for many polylines
+  });
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright" style="color:#8891a8">OpenStreetMap</a> contributors | LTA DataMall',
+    maxZoom: 19,
+  }).addTo(map);
+}
+
+function getOpColor(opCode) {
+  return (OPERATORS[opCode] || { color: "#888" }).color;
+}
+
+function buildRouteLines(data) {
+  const { stops, services, routes } = data;
+  allLayers = [];
+
+  for (const [svcNo, dirMap] of Object.entries(routes)) {
+    const svcInfo = services[svcNo] || { op: "?", opName: "Unknown", cat: "", pkg: "Other" };
+    const color   = getOpColor(svcInfo.op);
+
+    for (const [dir, stopCodes] of Object.entries(dirMap)) {
+      // Build LatLng array, skipping stops with no coordinates
+      const latlngs = [];
+      for (const code of stopCodes) {
+        const s = stops[code];
+        if (s && s.lat && s.lon) latlngs.push([s.lat, s.lon]);
+      }
+      if (latlngs.length < 2) continue;
+
+      const startStop = stops[stopCodes[0]];
+      const endStop   = stops[stopCodes[stopCodes.length - 1]];
+      const from = startStop ? startStop.desc : stopCodes[0];
+      const to   = endStop   ? endStop.desc   : stopCodes[stopCodes.length - 1];
+
+      const line = L.polyline(latlngs, {
+        color,
+        weight: 2.5,
+        opacity: 0.75,
+      });
+
+      line.bindPopup(() => {
+        const pkgName = svcInfo.pkg || "Other";
+        return `
+          <div class="popup-title">Service ${svcNo}  <small style="color:var(--muted)">Dir ${dir}</small></div>
+          <div style="margin-bottom:6px">
+            <span class="op-badge" style="background:${color}">${svcInfo.opName}</span>
+            <span class="pkg-badge">📦 ${pkgName}</span>
+          </div>
+          <div class="popup-row"><b>Category:</b> ${svcInfo.cat || "—"}</div>
+          <div class="popup-row"><b>From:</b> ${from}</div>
+          <div class="popup-row"><b>To:</b> ${to}</div>
+          <div class="popup-row"><b>Stops:</b> ${stopCodes.length}</div>
+        `;
+      }, { maxWidth: 280 });
+
+      line._svcNo  = svcNo;
+      line._op     = svcInfo.op;
+      line._pkg    = svcInfo.pkg;
+      allLayers.push(line);
+    }
+  }
+}
+
+function applyFilters() {
+  if (!map) return;
+  const op  = currentOpFilter;
+  const pkg = currentPkgFilter;
+  const q   = currentSearch.toUpperCase();
+
+  let shown = 0;
+  for (const layer of allLayers) {
+    const visible =
+      (!op  || layer._op  === op)  &&
+      (!pkg || layer._pkg === pkg) &&
+      (!q   || layer._svcNo.toUpperCase().startsWith(q));
+
+    if (visible) {
+      if (!map.hasLayer(layer)) layer.addTo(map);
+      shown++;
+    } else {
+      if (map.hasLayer(layer)) map.removeLayer(layer);
+    }
+  }
+  $stats.textContent = `${shown.toLocaleString()} route directions shown`;
+}
+
+function populatePackageFilter(services) {
+  const sel = document.getElementById("filter-package");
+  const pkgs = [...new Set(Object.values(services).map(s => s.pkg))].sort();
+  for (const pkg of pkgs) {
+    const opt = document.createElement("option");
+    opt.value = pkg;
+    opt.textContent = pkg;
+    sel.appendChild(opt);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAIN
+═══════════════════════════════════════════════════════════════ */
+async function main() {
+  initMap();
+
+  try {
+    data = await loadData();
+  } catch (err) {
+    console.error(err);
+    showError(
+      `<b>Error loading data:</b> ${err.message}<br>
+       <small>The data files (bus_stops.json, bus_services.json, bus_routes.json) may be missing.<br>
+       Run <code>python3 fetch_data.py --key YOUR_KEY</code> locally and commit the generated files.</small>`
+    );
+    return;
+  }
+
+  setProgress(95, "Rendering map…");
+  buildRouteLines(data);
+  populatePackageFilter(data.services);
+  applyFilters();
+
+  const nSvcs  = Object.keys(data.services).length;
+  const nStops = Object.keys(data.stops).length;
+  $stats.textContent = `${allLayers.length.toLocaleString()} route directions | ${nSvcs} services | ${nStops.toLocaleString()} stops`;
+
+  setProgress(100, "Done");
+  $overlay.style.display = "none";
+
+  // ── Event listeners ──────────────────────────────────────
+  document.getElementById("filter-operator").addEventListener("change", e => {
+    currentOpFilter = e.target.value; applyFilters();
+  });
+  document.getElementById("filter-package").addEventListener("change", e => {
+    currentPkgFilter = e.target.value; applyFilters();
+  });
+  document.getElementById("search").addEventListener("input", e => {
+    currentSearch = e.target.value.trim(); applyFilters();
+  });
+  document.getElementById("btn-clear-cache").addEventListener("click", () => {
+    localStorage.removeItem(CACHE_KEY);
+    localStorage.removeItem(CACHE_TS);
+    $overlay.style.display = "flex";
+    setProgress(0, "Refreshing…");
+    $errorMsg.style.display = "none";
+    main();
+  });
+
+  // ── Map toggle ───────────────────────────────────────────
+  const btnToggle = document.getElementById("btn-toggle-map");
+  const mapCont   = document.getElementById("map-container");
+  btnToggle.addEventListener("click", () => {
+    const collapsed = mapCont.classList.toggle("collapsed");
+    btnToggle.textContent = collapsed ? "▼ Show Map" : "▲ Hide Map";
+    btnToggle.classList.toggle("active", !collapsed);
+    if (!collapsed) setTimeout(() => map.invalidateSize(), 320);
+  });
+}
+
+main();
+</script>
+</body>
+</html>
