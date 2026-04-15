@@ -10,7 +10,7 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --sbst:  #1A56A0;
+      --sbst:  #731c7d;
       --smrt:  #C8102E;
       --gas:   #E87722;
       --tts:   #2E8B57;
@@ -84,6 +84,45 @@
     #progress-msg { color: var(--muted); font-size: 0.85rem; max-width: 340px; text-align: center; }
     #error-msg { color: #e87; font-size: 0.82rem; max-width: 380px; text-align: center; display: none; }
 
+    /* ── SUMMARY STATS ───────────────────────────────────── */
+    #summary-section {
+      padding: 24px 20px 48px;
+      background: var(--bg);
+    }
+    #summary-section h2 {
+      font-size: 0.9rem; font-weight: 700; letter-spacing: 0.4px;
+      color: var(--muted); text-transform: uppercase; margin-bottom: 14px;
+    }
+    .summary-scroll { overflow-x: auto; }
+    #summary-table {
+      width: 100%; border-collapse: collapse; font-size: 0.82rem;
+      min-width: 700px;
+    }
+    #summary-table th {
+      text-align: left; padding: 8px 14px;
+      border-bottom: 2px solid var(--border);
+      color: var(--muted); font-weight: 600;
+      white-space: nowrap; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.3px;
+    }
+    #summary-table td {
+      padding: 12px 14px; border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    #summary-table tbody tr:last-child td { border-bottom: none; }
+    #summary-table tbody tr:hover td { background: rgba(255,255,255,0.02); }
+    .op-cell { display: flex; align-items: center; gap: 10px; }
+    .op-pip  { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+    .op-cell span { font-weight: 600; white-space: nowrap; }
+    .regions-tags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 280px; }
+    .region-tag {
+      display: inline-block; padding: 2px 7px; border-radius: 10px;
+      font-size: 0.72rem; background: var(--card);
+      border: 1px solid var(--border); color: var(--muted);
+      white-space: nowrap;
+    }
+    .num-cell { font-variant-numeric: tabular-nums; }
+    .sub-val  { display: block; color: var(--muted); font-size: 0.74rem; margin-top: 2px; }
+
     /* ── LEAFLET OVERRIDES ────────────────────────────────── */
     .leaflet-container { background: #242830; }
     .leaflet-popup-content-wrapper {
@@ -128,7 +167,6 @@
     </select>
     <select id="filter-package"><option value="">All Packages</option></select>
     <input type="text" id="search" placeholder="Service no…" maxlength="6">
-    <button class="btn" id="btn-clear-cache" title="Force re-download all data">↺ Refresh Data</button>
   </div>
 </div>
 
@@ -144,6 +182,28 @@
   <div class="legend-item"><div class="legend-swatch" style="background:var(--gas)"></div><span class="legend-label">Go-Ahead Singapore</span></div>
   <div class="legend-item"><div class="legend-swatch" style="background:var(--tts)"></div><span class="legend-label">Tower Transit</span></div>
   <div id="stats"></div>
+  <div id="last-updated" style="color:var(--muted);font-size:0.78rem;margin-left:auto;white-space:nowrap"></div>
+</div>
+
+<!-- SUMMARY STATS -->
+<div id="summary-section">
+  <h2>Network Summary by Operator</h2>
+  <div class="summary-scroll">
+    <table id="summary-table">
+      <thead>
+        <tr>
+          <th>Operator</th>
+          <th>Services</th>
+          <th>Route Dirs</th>
+          <th>Contracts / Regions</th>
+          <th>Avg Stops / Direction</th>
+          <th>Avg Distance / Service</th>
+          <th>Est. Total Network km</th>
+        </tr>
+      </thead>
+      <tbody id="summary-tbody"></tbody>
+    </table>
+  </div>
 </div>
 
 <script>
@@ -155,7 +215,7 @@ const CACHE_TS    = "sgbusmap_v4_ts";
 const CACHE_TTL   = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const OPERATORS = {
-  "SBST": { name: "SBS Transit",        color: "#1A56A0" },
+  "SBST": { name: "SBS Transit",        color: "#731c7d" },
   "SMRT": { name: "SMRT Buses",         color: "#C8102E" },
   "GAS":  { name: "Go-Ahead Singapore", color: "#E87722" },
   "TTS":  { name: "Tower Transit",      color: "#2E8B57" },
@@ -307,7 +367,9 @@ async function loadData() {
     const cached = localStorage.getItem(CACHE_KEY);
     if (cached) {
       setProgress(100, "Loading from cache…");
-      return JSON.parse(cached);
+      const d = JSON.parse(cached);
+      d._lastModified = localStorage.getItem("sgbusmap_lastmod");
+      return d;
     }
   }
 
@@ -318,8 +380,17 @@ async function loadData() {
     return r.json();
   });
 
-  const [rawStops, rawServices, rawRoutes] = await Promise.all([
-    fetchJSON("./data/bus_stops.json"),
+  // Capture Last-Modified from bus_stops.json for the "last updated" display
+  let lastModified = null;
+  const stopsResp = await fetch("./data/bus_stops.json");
+  if (!stopsResp.ok) throw new Error(`Failed to load bus_stops.json: ${stopsResp.statusText}`);
+  lastModified = stopsResp.headers.get("Last-Modified");
+  if (lastModified) {
+    try { localStorage.setItem("sgbusmap_lastmod", lastModified); } catch(e) {}
+  }
+  const rawStops = await stopsResp.json();
+
+  const [rawServices, rawRoutes] = await Promise.all([
     fetchJSON("./data/bus_services.json"),
     fetchJSON("./data/bus_routes.json"),
   ]);
@@ -344,9 +415,9 @@ async function loadData() {
   // routes: {ServiceNo: {dir: [stopCodes...]}} — already correct shape
   const routes = rawRoutes;
 
-  const data = { stops, services, routes };
+  const data = { stops, services, routes, _lastModified: lastModified };
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ stops, services, routes }));
     localStorage.setItem(CACHE_TS, Date.now().toString());
   } catch (e) { /* storage full — continue without cache */ }
 
@@ -464,6 +535,77 @@ function populatePackageFilter(services) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   SUMMARY STATS
+═══════════════════════════════════════════════════════════════ */
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 +
+            Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function buildSummaryTable(data) {
+  const { stops, services, routes } = data;
+
+  const acc = {};
+  for (const code of Object.keys(OPERATORS)) {
+    acc[code] = { svcs: new Set(), dirs: 0, totalStops: 0, distKm: 0, pkgs: new Set() };
+  }
+
+  for (const [svcNo, dirMap] of Object.entries(routes)) {
+    const svc = services[svcNo];
+    if (!svc) continue;
+    const op = svc.op;
+    if (!acc[op]) continue;
+    acc[op].svcs.add(svcNo);
+    if (svc.pkg && svc.pkg !== "Other") acc[op].pkgs.add(svc.pkg);
+
+    // Use direction 1 only for distance (avoid double-counting)
+    const dir1Codes = dirMap["1"] || dirMap[1] || Object.values(dirMap)[0] || [];
+    for (let i = 0; i < dir1Codes.length - 1; i++) {
+      const s1 = stops[dir1Codes[i]], s2 = stops[dir1Codes[i+1]];
+      if (s1?.lat && s2?.lat) acc[op].distKm += haversineKm(s1.lat, s1.lon, s2.lat, s2.lon);
+    }
+
+    for (const codes of Object.values(dirMap)) {
+      acc[op].dirs++;
+      acc[op].totalStops += codes.length;
+    }
+  }
+
+  const tbody = document.getElementById("summary-tbody");
+  tbody.innerHTML = "";
+  for (const [code, info] of Object.entries(OPERATORS)) {
+    const a = acc[code];
+    if (!a || a.svcs.size === 0) continue;
+
+    const nSvcs    = a.svcs.size;
+    const avgStops = a.dirs > 0 ? (a.totalStops / a.dirs).toFixed(0) : "—";
+    const avgDist  = nSvcs > 0  ? (a.distKm / nSvcs).toFixed(1) : "—";
+    const totalDist = Math.round(a.distKm).toLocaleString();
+    const tags = [...a.pkgs].sort().map(p =>
+      `<span class="region-tag">${p}</span>`).join("") || '<span class="region-tag" style="font-style:italic">—</span>';
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><div class="op-cell">
+        <div class="op-pip" style="background:${info.color}"></div>
+        <span>${info.name}</span>
+      </div></td>
+      <td class="num-cell">${nSvcs}</td>
+      <td class="num-cell">${a.dirs}</td>
+      <td><div class="regions-tags">${tags}</div></td>
+      <td class="num-cell">${avgStops} stops</td>
+      <td class="num-cell">${avgDist} km<span class="sub-val">dir 1 avg per service</span></td>
+      <td class="num-cell">${totalDist} km<span class="sub-val">sum of dir 1 routes</span></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
    MAIN
 ═══════════════════════════════════════════════════════════════ */
 async function main() {
@@ -490,8 +632,18 @@ async function main() {
   const nStops = Object.keys(data.stops).length;
   $stats.textContent = `${allLayers.length.toLocaleString()} route directions | ${nSvcs} services | ${nStops.toLocaleString()} stops`;
 
+  // Last updated date
+  const lm = data._lastModified || localStorage.getItem("sgbusmap_lastmod");
+  if (lm) {
+    const d = new Date(lm);
+    const fmt = d.toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric" });
+    document.getElementById("last-updated").textContent = `Data as of ${fmt}`;
+  }
+
   setProgress(100, "Done");
   $overlay.style.display = "none";
+
+  buildSummaryTable(data);
 
   // ── Event listeners ──────────────────────────────────────
   document.getElementById("filter-operator").addEventListener("change", e => {
@@ -502,14 +654,6 @@ async function main() {
   });
   document.getElementById("search").addEventListener("input", e => {
     currentSearch = e.target.value.trim(); applyFilters();
-  });
-  document.getElementById("btn-clear-cache").addEventListener("click", () => {
-    localStorage.removeItem(CACHE_KEY);
-    localStorage.removeItem(CACHE_TS);
-    $overlay.style.display = "flex";
-    setProgress(0, "Refreshing…");
-    $errorMsg.style.display = "none";
-    main();
   });
 
   // ── Map toggle ───────────────────────────────────────────
